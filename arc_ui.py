@@ -178,7 +178,7 @@ PARAM_GROUPS = {
 }
 
 # Colour palette
-BG=="#1e1e2e"; BG2="#2a2a3e"; BG3="#313145"; ACCENT="#7c6af7"; ACCENT2="#a89cf7"
+BG="#1e1e2e"; BG2="#2a2a3e"; BG3="#313145"; ACCENT="#7c6af7"; ACCENT2="#a89cf7"
 GREEN="#3dd68c"; RED="#f77c6a"; YELLOW="#f7c86a"; FG="#e0e0f0"; FG2="#a0a0c0"
 ENTRY_BG="#252538"; BORDER="#3a3a5c"; CYAN="#6af7e0"; ORANGE="#f7a06a"
 

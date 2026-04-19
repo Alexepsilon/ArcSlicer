@@ -1,7 +1,5 @@
 @echo off
 title ArcSlicer
-
-:: Run from the folder where this .bat file lives
 cd /d "%~dp0"
 
 :: Check that the arc script is present
@@ -24,9 +22,13 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Launch the UI (hide the console window after launch)
-start "" /B pythonw arc_ui.py 2>nul
+:: Try to launch with pythonw (no console window)
+:: If it fails (syntax error, missing import, etc.) fall back to python so you can see the error
+pythonw arc_ui.py
 if %errorlevel% neq 0 (
-    :: pythonw not available, fall back to python (shows a console)
+    echo.
+    echo  UI failed to start. Launching with visible console for error details...
+    echo.
     python arc_ui.py
+    pause
 )
