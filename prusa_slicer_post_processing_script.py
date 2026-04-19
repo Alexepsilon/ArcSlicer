@@ -317,6 +317,34 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                     #print("FEATURES:",[(f[0],f[2]) for f in layer.features])
                     injectionStart=None
                     print("modifying GCode")
+
+                    def find_actual_layer_z(lines, before_idx):
+                        """
+                        Find the real printing Z height for this layer.
+                        OrcaSlicer z-hops look like:  G1 Z13.8 F30000  (has F = fast hop up)
+                        The z-drop back to layer height: G1 Z13.2       (no F parameter)
+                        We scan backwards for the last G1 Z line WITHOUT F — that's the
+                        actual print height. Falls back to minimum Z seen if not found.
+                        """
+                        min_z = None
+                        for i in reversed(range(before_idx)):
+                            cmd = lines[i].split(";")[0].strip()
+                            if cmd.startswith("G1") and "Z" in cmd:
+                                parts = cmd.split()
+                                has_f = any(p.startswith("F") for p in parts)
+                                for p in parts:
+                                    if p.startswith("Z"):
+                                        try:
+                                            z_val = float(p[1:])
+                                            if min_z is None or z_val < min_z:
+                                                min_z = z_val
+                                            if not has_f:
+                                                # No feed rate = z-drop = actual layer height
+                                                return z_val
+                                        except ValueError:
+                                            pass
+                        return min_z  # fallback: lowest Z seen
+
                     for idline,line in enumerate(layer.lines):
                         if layer.validpolys:
                             if ";TYPE" in line and not isInjected:#inject arcs at the very start
@@ -329,12 +357,13 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                             modifiedlayer.lines.append(cmdline)
                                 isInjected=True
                                 #add restored pre-injected tool position
+                                actual_z = find_actual_layer_z(layer.lines, injectionStart)
                                 for id in reversed(range(injectionStart)):
                                     if "X" in layer.lines[id]:
                                         modifiedlayer.lines.append(layer.lines[id])
-                                        # Correct Z: the restored line may contain a Z-hop height
-                                        # so we explicitly move back to this layer's Z height.
-                                        modifiedlayer.lines.append(f"G1 Z{layer.z:.4f}\n")
+                                        # Correct Z to actual print height (not z-hop height)
+                                        if actual_z is not None:
+                                            modifiedlayer.lines.append(f"G1 Z{actual_z:.4f}\n")
                                         break
                         if layer.oldpolys:
                             if ";TYPE" in line and not hilbertIsInjected:# startpoint of solid infill: print all hilberts from here.
@@ -345,12 +374,13 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                 hilbertGCode=hilbert2GCode(allhilbertpts,parameters,layer.height)
                                 modifiedlayer.lines.extend(hilbertGCode)
                                 #add restored pre-injected tool position
+                                actual_z = find_actual_layer_z(layer.lines, injectionStart)
                                 for id in reversed(range(injectionStart)):
                                     if "X" in layer.lines[id]:
                                         modifiedlayer.lines.append(layer.lines[id])
-                                        # Correct Z: the restored line may contain a Z-hop height
-                                        # so we explicitly move back to this layer's Z height.
-                                        modifiedlayer.lines.append(f"G1 Z{layer.z:.4f}\n")
+                                        # Correct Z to actual print height (not z-hop height)
+                                        if actual_z is not None:
+                                            modifiedlayer.lines.append(f"G1 Z{actual_z:.4f}\n")
                                         break
                         if "G1 F" in line.split(";")[0]:#special block-speed-command
                             curPrintSpeed=line    
