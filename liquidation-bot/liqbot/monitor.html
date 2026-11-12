@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liquidation bot monitor</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f4f3f0; --surface: #fcfcfb; --border: #e3e2dd; --grid: #e9e8e3;
+    --text: #0b0b0b; --text-2: #52514e; --text-3: #7a7973;
+    --series: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #111110; --surface: #1a1a19; --border: #30302d; --grid: #2a2a27;
+      --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e85;
+      --series: #3987e5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 14px; margin: 0 0 10px; }
+  .sub { color: var(--text-2); font-size: 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; padding: 6px 14px; border: 0; background: var(--surface); color: var(--text-2); cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 14px 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .label { color: var(--text-2); font-size: 12px; }
+  .tile .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .note { color: var(--text-3); font-size: 12px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); }
+  .dot.good { background: var(--good); } .dot.critical { background: var(--critical); } .dot.warning { background: var(--warning); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; margin-top: 10px; }
+  .section { margin-top: 10px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; color: var(--text-2); font-weight: 500; padding: 4px 10px 6px 0; white-space: nowrap; }
+  td { padding: 5px 10px 5px 0; border-top: 1px solid var(--grid); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .empty { color: var(--text-3); padding: 18px 0; text-align: center; }
+  #chart { position: relative; }
+  #chart svg { display: block; width: 100%; height: 220px; }
+  #tip { position: absolute; pointer-events: none; background: var(--text); color: var(--surface);
+         padding: 6px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap; display: none; }
+  #log { max-height: 320px; overflow-y: auto; }
+  #log div { padding: 3px 0; border-top: 1px solid var(--grid); white-space: pre-wrap; word-break: break-word; }
+  .lvl { color: var(--text-3); margin-right: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Liquidation bot</h1>
+      <div class="sub" id="subtitle">connecting…</div>
+    </div>
+    <div class="seg" role="group" aria-label="Which results to show">
+      <button data-mode="paper" aria-pressed="true">Paper</button>
+      <button data-mode="live" aria-pressed="false">Live</button>
+      <button data-mode="backtest" aria-pressed="false">Backtest</button>
+    </div>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card section">
+    <h2 id="chart-title">Cumulative net profit</h2>
+    <div id="chart"><div id="tip"></div></div>
+  </div>
+
+  <div class="card section">
+    <h2 id="trades-title">Trades</h2>
+    <div class="scroll" id="trades"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card"><h2>Riskiest borrowers being watched</h2><div class="scroll" id="risky"></div></div>
+    <div class="card"><h2>Liquidations by anyone on this pool</h2><div class="scroll" id="market"></div></div>
+  </div>
+
+  <div class="card section"><h2>Bot log</h2><div id="log" class="mono"></div></div>
+</main>
+
+<script>
+"use strict";
+let mode = "paper";
+const $ = (id) => document.getElementById(id);
+// All chain-derived strings (token symbols, addresses) go through textContent, never innerHTML.
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
+const money = (v, sign) => v == null ? "–" : (sign && v > 0 ? "+" : "") + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "–";
+const when = (ts) => ts ? new Date(ts * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "–";
+const STATUS_TEXT = { paper: "paper trade", success: "success", reverted: "reverted", capturable: "capturable",
+  unprofitable: "not profitable", no_route: "no swap route", same_block: "same-block race" };
+
+function table(target, columns, rows, emptyText) {
+  target.replaceChildren();
+  if (!rows.length) return target.append(el("div", emptyText, "empty"));
+  const t = el("table"), head = el("tr");
+  for (const c of columns) head.append(el("th", c.name, c.num ? "num" : ""));
+  t.append(head);
+  for (const r of rows) {
+    const tr = el("tr");
+    for (const c of columns) tr.append(el("td", c.get(r), (c.num ? "num " : "") + (c.mono ? "mono" : "")));
+    t.append(tr);
+  }
+  target.append(t);
+}
+
+function tiles(s) {
+  const st = s.status, age = st.ts ? s.now - st.ts : null;
+  const alive = age != null && age < 60;
+  const box = $("tiles"); box.replaceChildren();
+  const add = (label, value, note) => {
+    const c = el("div", null, "card tile");
+    c.append(el("div", label, "label"), el("div", value, "value"), el("div", note || " ", "note"));
+    box.append(c); return c;
+  };
+  const hb = add("Bot", "", st.ts ? "last tick " + Math.round(age) + " s ago" : "no data yet");
+  const pill = el("span", null, "pill");
+  pill.append(el("span", null, "dot " + (alive ? "good" : "critical")), el("span", alive ? "running" : "not responding"));
+  hb.children[1].append(pill);
+  const sum = s.summary;
+  if (s.mode !== "live") add(s.mode === "paper" ? "Paper balance" : "Backtest balance", money(sum.balance), "started at " + money(sum.start));
+  add("Net profit", money(sum.net, true), "after " + money(sum.gas) + " gas");
+  add(s.mode === "backtest" ? "Capturable" : "Trades", String(sum.trades), s.mode === "backtest"
+    ? (sum.by_status.same_block || 0) + " same-block races not counted" : "");
+  if (s.mode !== "live") {
+    const r = s.rivals;
+    add("Head start", r.lead == null ? "–" : r.lead.toFixed(1) + " blocks",
+      s.mode === "paper" ? r.taken + " of " + r.n + " later taken by a rival" : "position sat open before a rival took it");
+  }
+  add("Borrowers watched", String(st.borrowers ?? "–"), (st.hot ?? 0) + " near liquidation");
+  add("Lowest health", st.lowest_hf == null ? "–" : st.lowest_hf.toFixed(3), (st.liquidatable ?? 0) + " liquidatable now");
+  $("subtitle").textContent = st.ts
+    ? "chain " + st.chain_id + " · block " + st.block + " · bot mode: " + st.mode + " · amounts in the pool's base currency (USD)"
+    : "waiting for the bot to write its first status";
+}
+
+function chart(s) {
+  const host = $("chart"), tip = $("tip");
+  host.querySelector("svg")?.remove(); host.querySelector(".empty")?.remove();
+  $("chart-title").textContent = "Cumulative net profit — " + s.mode;
+  const pts = [{ cum: 0, start: true }, ...s.curve];
+  if (pts.length < 2) return host.append(el("div", "No trades yet. The line appears with the first one.", "empty"));
+  const NS = "http://www.w3.org/2000/svg", W = Math.max(host.clientWidth, 300), H = 220;
+  const m = { l: 56, r: 14, t: 10, b: 26 };
+  const svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Cumulative net profit per trade; the trades table below lists every value");
+  const mk = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.append(e); return e; };
+  let lo = Math.min(0, ...pts.map(p => p.cum)), hi = Math.max(0, ...pts.map(p => p.cum));
+  if (hi === lo) hi = lo + 1;
+  const pad = (hi - lo) * 0.08; hi += pad; if (lo < 0) lo -= pad;
+  const x = (i) => m.l + (W - m.l - m.r) * i / (pts.length - 1);
+  const y = (v) => m.t + (H - m.t - m.b) * (1 - (v - lo) / (hi - lo));
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + (hi - lo) * i / 4;
+    mk("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: "var(--grid)", "stroke-width": 1 });
+    mk("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--text-3)" }).textContent = money(v);
+  }
+  mk("line", { x1: m.l, x2: W - m.r, y1: y(0), y2: y(0), stroke: "var(--text-3)", "stroke-width": 1 });
+  mk("text", { x: m.l, y: H - 6, "font-size": 11, fill: "var(--text-3)" }).textContent = "start";
+  mk("text", { x: W - m.r, y: H - 6, "text-anchor": "end", "font-size": 11, fill: "var(--text-3)" }).textContent = "trade " + (pts.length - 1);
+  mk("path", { d: pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.cum).toFixed(1)).join(" "),
+    fill: "none", stroke: "var(--series)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
+  const last = pts.length - 1;
+  mk("circle", { cx: x(last), cy: y(pts[last].cum), r: 4, fill: "var(--series)", stroke: "var(--surface)", "stroke-width": 2 });
+  const cross = mk("line", { y1: m.t, y2: H - m.b, stroke: "var(--text-3)", "stroke-width": 1, visibility: "hidden" });
+  const dot = mk("circle", { r: 4, fill: "var(--series)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" });
+  const hit = mk("rect", { x: m.l, y: 0, width: W - m.l - m.r, height: H, fill: "transparent" });
+  hit.addEventListener("pointermove", (ev) => {
+    const box = svg.getBoundingClientRect(), px = (ev.clientX - box.left) * W / box.width;
+    const i = Math.max(0, Math.min(last, Math.round((px - m.l) / (W - m.l - m.r) * last))), p = pts[i];
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(p.cum)); dot.setAttribute("visibility", "visible");
+    tip.textContent = p.start ? "Start: 0.00" : "Trade " + i + " · block " + p.block + " · " + money(p.net, true) + " → total " + money(p.cum, true);
+    tip.style.display = "block";
+    const left = x(i) * box.width / W;
+    tip.style.left = Math.min(Math.max(left - tip.offsetWidth / 2, 0), box.width - tip.offsetWidth) + "px";
+    tip.style.top = "0px";
+  });
+  hit.addEventListener("pointerleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); });
+  host.append(svg);
+}
+
+function render(s) {
+  tiles(s); chart(s);
+  $("trades-title").textContent = s.mode === "backtest" ? "Historical liquidations replayed" : "Trades — " + s.mode;
+  table($("trades"), [
+    { name: s.mode === "backtest" ? "Block" : "Time", get: r => s.mode === "backtest" ? String(r.block) : when(r.ts) },
+    { name: "Result", get: r => STATUS_TEXT[r.status] || r.status },
+    { name: "Borrower", get: r => short(r.user), mono: true },
+    { name: "Pair", get: r => r.collateral ? r.collateral + " → " + r.debt : "–" },
+    { name: "Route", get: r => r.route || "–" },
+    { name: "Profit", get: r => money(r.profit_base), num: true },
+    { name: "Gas", get: r => money(r.gas_base), num: true },
+    { name: "Net", get: r => money(r.net_base, true), num: true },
+    { name: "Head start", get: r => r.lead_blocks == null ? "–" : r.lead_blocks + " blk", num: true },
+  ], s.trades, s.mode === "backtest" ? "No backtest has been run yet: python -m liqbot backtest --from-block N"
+       : "Nothing yet. Liquidations are rare; quiet days are normal.");
+  table($("risky"), [
+    { name: "Borrower", get: r => short(r.address), mono: true },
+    { name: "Health", get: r => r.hf.toFixed(3), num: true },
+    { name: "Collateral", get: r => money(r.coll_base), num: true },
+    { name: "Debt", get: r => money(r.debt_base), num: true },
+  ], s.risky, "No borrowers discovered yet.");
+  table($("market"), [
+    { name: "Block", get: r => String(r.block) },
+    { name: "Borrower", get: r => short(r.user), mono: true },
+    { name: "Liquidator", get: r => short(r.liquidator), mono: true },
+  ], s.market_liqs, "None seen since the bot started scanning.");
+  if (s.market.n) $("market").prepend(el("div", s.market.n + " liquidations by " + s.market.who + " different liquidators", "sub"));
+  const log = $("log"); log.replaceChildren();
+  if (!s.events.length) log.append(el("div", "No log lines yet.", "empty"));
+  for (const e of s.events) {
+    const row = el("div");
+    row.append(el("span", when(e.ts) + " " + e.level, "lvl"), document.createTextNode(e.msg));
+    log.append(row);
+  }
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/state?mode=" + mode);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    render(data);
+  } catch (err) {
+    $("subtitle").textContent = "Cannot read bot data: " + err.message;
+  }
+}
+for (const b of document.querySelectorAll(".seg button")) b.addEventListener("click", () => {
+  mode = b.dataset.mode;
+  for (const o of document.querySelectorAll(".seg button")) o.setAttribute("aria-pressed", String(o === b));
+  refresh();
+});
+refresh();
+setInterval(refresh, 3000);
+window.addEventListener("resize", refresh);
+</script>
+</body>
+</html>

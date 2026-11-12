@@ -1,0 +1,36 @@
+# Copy to config.toml and fill in. Nothing secret belongs in this file:
+# the private key (live mode only) is read from the LIQBOT_PRIVATE_KEY environment variable.
+
+[chain]
+rpc_url = "https://YOUR-RPC-ENDPOINT"
+chain_id = 0                       # set it, so a wrong RPC is caught at startup
+wrapped_native = "0x..."           # WETH (or the chain's wrapped gas token)
+# multicall3 = "0xcA11bde05977b3631167028862bE2a173976CA11"   # same address on most chains
+hubs = []                          # extra tokens to route swaps through, e.g. the main stablecoin
+
+[protocol]
+addresses_provider = "0x..."       # the Aave-v3-style PoolAddressesProvider of the target protocol
+start_block = 0                    # block the pool was deployed at; 0 = only the last 100k blocks
+
+[bot]
+mode = "paper"                     # "paper" = simulate only, "live" = send real transactions
+owner = "0x..."                    # any address of yours; used for paper simulations
+liquidator = ""                    # FlashLiquidator address; required for live, optional for paper
+db_path = "liqbot.db"
+poll_seconds = 2
+full_rescan_every = 30             # every N ticks, re-check all borrowers (not only the risky ones)
+hot_hf = 1.05                      # borrowers under this health factor are checked every tick
+min_profit = 1.0                   # USD; skip anything that nets less after gas
+gas_safety = 1.5                   # profit must cover 1.5x the estimated gas
+paper_start_balance = 550.0        # about EUR 500 in USD
+
+# One block per DEX the bot may swap seized collateral on.
+# kind: "v3_02" = Uniswap V3 SwapRouter02, "v3" = original SwapRouter, "v2" = Uniswap V2 style.
+[[dex]]
+kind = "v3_02"
+router = "0x..."
+fees = [500, 3000]
+
+# [[dex]]
+# kind = "v2"
+# router = "0x..."
